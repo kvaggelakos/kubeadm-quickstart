@@ -1,4 +1,19 @@
+#!/bin/bash
+
+# Versions
+CONTAINERD_VERSION=1.7.2
+RUNC_VERSION=1.1.7
+CNI_VERSION=1.3.0
+CALICO_VERSION=3.26.1
+
+MY_IP=$(hostname -I | cut -d' ' -f1)
+
+
+# Machine setup
 swapoff --all
+systemctl stop apparmor
+systemctl disable apparmor
+systemctl restart containerd.service
 
 cat <<EOF | tee /etc/modules-load.d/k8s.conf
 overlay
@@ -14,10 +29,6 @@ EOF
 sysctl --system
 
 
-CONTAINERD_VERSION=1.7.2
-RUNC_VERSION=1.1.7
-CNI_VERSION=1.3.0
-FLANNEL_VERSION=0.22.0
 
 wget https://github.com/containerd/containerd/releases/download/v$CONTAINERD_VERSION/containerd-$CONTAINERD_VERSION-linux-amd64.tar.gz
 tar Cxzvf /usr/local containerd-$CONTAINERD_VERSION-linux-amd64.tar.gz
@@ -37,10 +48,6 @@ wget https://raw.githubusercontent.com/containerd/containerd/main/containerd.ser
 systemctl daemon-reload
 systemctl enable --now containerd
 
-wget https://github.com/flannel-io/flannel/releases/download/v$FLANNEL_VERSION/flannel-v$FLANNEL_VERSION-linux-amd64.tar.gz
-mkdir /opt/bin
-tar --directory=/opt/bin --extract --gzip --file="flannel-v$FLANNEL_VERSION-linux-amd64.tar.gz" flanneld
-
 apt-get update && apt-get install -y apt-transport-https ca-certificates curl
 curl -fsSLo /usr/share/keyrings/kubernetes-archive-keyring.gpg https://packages.cloud.google.com/apt/doc/apt-key.gpg
 echo "deb [signed-by=/usr/share/keyrings/kubernetes-archive-keyring.gpg] https://apt.kubernetes.io/ kubernetes-xenial main" | tee /etc/apt/sources.list.d/kubernetes.list
@@ -48,8 +55,16 @@ apt-get update
 apt-get install -y kubelet kubeadm kubectl
 apt-mark hold kubelet kubeadm kubectl
 
-kubeadm init --pod-network-cidr=10.244.0.0/16
+kubeadm init --pod-network-cidr=10.244.0.0/16 --apiserver-advertise-address=$MY_IP
 echo 'KUBECONFIG=/etc/kubernetes/admin.conf' >> /etc/environment
 export KUBECONFIG=/etc/kubernetes/admin.conf
-kubectl apply -f https://raw.githubusercontent.com/flannel-io/flannel/master/Documentation/kube-flannel.yml
-kubectl get pods --all-namespaces
+
+kubectl create -f https://raw.githubusercontent.com/projectcalico/calico/v$CALICO_VERSION/manifests/tigera-operator.yaml
+wget https://raw.githubusercontent.com/projectcalico/calico/v$CALICO_VERSION/manifests/custom-resources.yaml
+sed -i -E "s/cidr.+/cidr: 10.244.0.0\/16/g" custom-resources.yaml
+kubectl create -f custom-resources.yaml
+
+kubectl taint nodes --all node-role.kubernetes.io/control-plane-
+kubectl taint nodes --all node-role.kubernetes.io/master-
+
+kubectl get nodes --all-namespaces -o wide
